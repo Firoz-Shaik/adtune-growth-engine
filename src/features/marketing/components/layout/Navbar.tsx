@@ -82,15 +82,19 @@ export function Navbar() {
 
           <ul className="hidden items-center gap-1 md:flex">
             <li className="relative">
-              <div onMouseEnter={openDesktopServices} onMouseLeave={closeDesktopServices}>
+              <div>
                 <Link
                   to="/#services"
+                  onMouseEnter={openDesktopServices}
+                  onMouseLeave={closeDesktopServices}
                   className="flex items-center gap-1 rounded-full px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
                 >
                   Services <ChevronDown className="h-4 w-4" />
                 </Link>
                 <div className="absolute left-0 top-full z-50 w-64 pt-2">
                   <div
+                    onMouseEnter={openDesktopServices}
+                    onMouseLeave={closeDesktopServices}
                     className={cn(
                       "rounded-2xl border border-border bg-surface/95 p-2 shadow-elevated backdrop-blur-xl transition-all duration-200",
                       servicesOpenDesktop ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
