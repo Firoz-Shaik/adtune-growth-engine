@@ -1,245 +1,241 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowLeft, Bold, Italic, Heading2, Link2, List, Quote, Image as ImageIcon, Code, Save, Send, Upload, X } from "lucide-react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Archive, ArrowLeft, Save, Send, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/features/auth/AuthProvider";
+import { useAdminPost, useCategories, useCreateCategory, useSavePost, useSlugAvailable, useTags } from "@/features/blog/api";
+import { Markdown, readTime } from "@/features/blog/Markdown";
+import { uploadFeaturedMedia } from "@/features/blog/media";
+import { publicMediaUrl } from "@/lib/supabase/client";
+import type { BlogPostInput, BlogPostStatus } from "@/lib/supabase/types";
+import { slugify, validPost } from "@/features/blog/validation";
 
-const tabs = ["Content", "Media", "SEO", "Settings"] as const;
-type Tab = typeof tabs[number];
+type EditorState = {
+  title: string;
+  slug: string;
+  excerpt: string;
+  content: string;
+  categoryId: string;
+  tagNames: string[];
+  featuredMediaId: string | null;
+  coverUrl: string | null;
+  coverAlt: string;
+  metaTitle: string;
+  metaDescription: string;
+  focusKeyword: string;
+  publishedAt: string | null;
+  archivedAt: string | null;
+};
 
-const AdminBlogEditor = () => {
-  const [tab, setTab] = useState<Tab>("Content");
-  const [title, setTitle] = useState("");
-  const [slug, setSlug] = useState("");
-  const [excerpt, setExcerpt] = useState("");
-  const [metaDesc, setMetaDesc] = useState("");
-  const [tags, setTags] = useState<string[]>(["seo", "hyderabad"]);
-  const [tagInput, setTagInput] = useState("");
-  const [status, setStatus] = useState<"Draft" | "Published">("Draft");
+const empty: EditorState = {
+  title: "", slug: "", excerpt: "", content: "", categoryId: "", tagNames: [],
+  featuredMediaId: null, coverUrl: null, coverAlt: "", metaTitle: "", metaDescription: "", focusKeyword: "",
+  publishedAt: null, archivedAt: null,
+};
+
+export default function AdminBlogEditor() {
+  const { id: routeId } = useParams();
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const { toast } = useToast();
+  const [postId] = useState(() => routeId || crypto.randomUUID());
+  const { data, isLoading } = useAdminPost(routeId);
+  const { data: categories = [] } = useCategories();
+  const { data: allTags = [] } = useTags();
+  const savePost = useSavePost();
+  const createCategory = useCreateCategory();
+  const [post, setPost] = useState<EditorState>(empty);
+  const [preview, setPreview] = useState(false);
+  const [tag, setTag] = useState("");
+  const [newCategory, setNewCategory] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const { data: slugAvailable } = useSlugAvailable(post.slug, postId);
+  const isExisting = Boolean(routeId);
 
-  const addTag = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && tagInput.trim()) {
-      e.preventDefault();
-      setTags([...tags, tagInput.trim()]);
-      setTagInput("");
+  useEffect(() => {
+    if (!data) return;
+    setPost({
+      title: data.title,
+      slug: data.slug,
+      excerpt: data.excerpt,
+      content: data.content,
+      categoryId: data.categoryId || "",
+      tagNames: data.tags.map((item) => item.name),
+      featuredMediaId: data.featuredMediaId,
+      coverUrl: data.coverUrl,
+      coverAlt: data.coverAlt,
+      metaTitle: data.metaTitle || "",
+      metaDescription: data.metaDescription || "",
+      focusKeyword: data.focusKeyword || "",
+      publishedAt: data.publishedAt,
+      archivedAt: data.archivedAt,
+    });
+  }, [data]);
+
+  const words = useMemo(() => post.content.trim().split(/\s+/).filter(Boolean).length, [post.content]);
+  const update = <K extends keyof EditorState>(key: K, value: EditorState[K]) => setPost((current) => ({ ...current, [key]: value }));
+
+  const addTag = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" || !tag.trim()) return;
+    event.preventDefault();
+    update("tagNames", [...new Set([...post.tagNames, tag.trim()])]);
+    setTag("");
+  };
+
+  const toInput = (status: BlogPostStatus): BlogPostInput => ({
+    title: post.title.trim(),
+    slug: post.slug,
+    excerpt: post.excerpt,
+    content: post.content,
+    featured_media_id: post.featuredMediaId,
+    category_id: post.categoryId || null,
+    status,
+    published_at: status === "published" ? post.publishedAt || new Date().toISOString() : post.publishedAt,
+    archived_at: status === "archived" ? post.archivedAt || new Date().toISOString() : null,
+    meta_title: post.metaTitle.trim() || null,
+    meta_description: post.metaDescription.trim() || null,
+    focus_keyword: post.focusKeyword.trim() || null,
+  });
+
+  const save = async (status: BlogPostStatus) => {
+    const input = toInput(status);
+    if (!validPost(input, status === "published")) {
+      return toast({ variant: "destructive", title: "Complete required fields", description: status === "published" ? "Add a title, slug, excerpt, and Markdown content before publishing." : "Add a title, valid slug, and Markdown content." });
+    }
+    if (slugAvailable === false) return toast({ variant: "destructive", title: "Slug already exists" });
+    try {
+      await savePost.mutateAsync({ id: postId, input, authorId: user!.id, tagNames: post.tagNames });
+      setPost((current) => ({ ...current, publishedAt: input.published_at, archivedAt: input.archived_at }));
+      toast({ title: status === "published" ? "Post published" : status === "archived" ? "Post archived" : "Draft saved" });
+      if (!isExisting) navigate(`/admin/blogs/edit/${postId}`, { replace: true });
+    } catch (error) {
+      toast({ variant: "destructive", title: "Save failed", description: error instanceof Error ? error.message : "Try again." });
     }
   };
 
-  const save = (publish?: boolean) => {
-    if (publish) setStatus("Published");
-    toast({
-      title: publish ? "Post published" : "Draft saved",
-      description: publish ? "Your post is now live on the site." : "Your changes have been saved.",
-    });
+  const upload = async (file?: File) => {
+    if (!file || !user) return;
+    setUploading(true);
+    try {
+      const uploaded = await uploadFeaturedMedia(file, user.id, postId, post.coverAlt || post.title);
+      setPost((current) => ({
+        ...current,
+        featuredMediaId: uploaded.id,
+        coverUrl: publicMediaUrl(uploaded.storage_path, uploaded.bucket_name),
+        coverAlt: uploaded.alt_text || current.coverAlt,
+      }));
+    } catch (error) {
+      toast({ variant: "destructive", title: "Upload failed", description: error instanceof Error ? error.message : "Try again." });
+    } finally {
+      setUploading(false);
+    }
   };
 
-  const ContentPane = (
-    <div className="space-y-5">
-      <Input
-        value={title}
-        onChange={(e) => {
-          setTitle(e.target.value);
-          if (!slug) setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").slice(0, 60));
-        }}
-        placeholder="Untitled post"
-        className="h-auto border-0 bg-transparent px-0 font-display text-3xl font-medium leading-tight focus-visible:ring-0 md:text-4xl"
-      />
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span className="text-xs tracking-caps">Slug</span>
-        <span className="opacity-50">/blog/</span>
-        <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="post-url-slug" className="h-9 max-w-md" />
-      </div>
+  const addCategory = async () => {
+    if (!newCategory.trim()) return;
+    try {
+      const created = await createCategory.mutateAsync(newCategory);
+      update("categoryId", created.id);
+      setNewCategory("");
+    } catch (error) {
+      toast({ variant: "destructive", title: "Could not create category", description: error instanceof Error ? error.message : "Try again." });
+    }
+  };
 
-      <div className="rounded-xl border border-border bg-surface-elevated/40">
-        <div className="flex flex-wrap items-center gap-1 border-b border-border p-2">
-          {[Heading2, Bold, Italic, Link2, List, Quote, ImageIcon, Code].map((Icon, i) => (
-            <button key={i} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground">
-              <Icon className="h-4 w-4" />
-            </button>
-          ))}
-        </div>
-        <Textarea
-          rows={16}
-          placeholder="Start writing your post… use the toolbar above for formatting."
-          className="min-h-[400px] resize-none border-0 bg-transparent p-5 text-base leading-relaxed focus-visible:ring-0"
-        />
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Excerpt</label>
-        <Textarea
-          value={excerpt}
-          onChange={(e) => setExcerpt(e.target.value.slice(0, 160))}
-          rows={2}
-          placeholder="A short summary that appears in blog listings and previews."
-        />
-        <div className="mt-1 text-right text-[11px] text-muted-foreground">{excerpt.length}/160</div>
-      </div>
-    </div>
-  );
-
-  const MediaPane = (
-    <div className="space-y-5">
-      <div>
-        <label className="mb-2 block text-xs tracking-caps text-muted-foreground">Featured image</label>
-        <div className="surface-card flex flex-col items-center justify-center gap-3 border-dashed p-10 text-center transition-colors hover:border-primary">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-primary-glow">
-            <Upload className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-sm font-medium">Drop an image or click to upload</div>
-            <div className="mt-1 text-xs text-muted-foreground">Recommended 1600 × 900 · JPG, PNG, WebP · Max 4 MB</div>
-          </div>
-          <Button variant="subtle" size="sm">Choose file</Button>
-        </div>
-      </div>
-    </div>
-  );
-
-  const SEOPane = (
-    <div className="space-y-5">
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Meta title</label>
-        <Input placeholder="Title shown in Google results" className="h-11" />
-      </div>
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Meta description</label>
-        <Textarea
-          value={metaDesc}
-          onChange={(e) => setMetaDesc(e.target.value.slice(0, 160))}
-          rows={3}
-          placeholder="A compelling 1-2 sentence summary for search engines."
-        />
-        <div className="mt-1 text-right text-[11px] text-muted-foreground">{metaDesc.length}/160</div>
-      </div>
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Canonical URL</label>
-        <Input placeholder="https://adtune.in/blog/your-post" className="h-11" />
-      </div>
-
-      {/* Google preview card */}
-      <div className="surface-card p-5">
-        <div className="text-xs tracking-caps text-muted-foreground">Google preview</div>
-        <div className="mt-4">
-          <div className="text-xs text-muted-foreground">adtune.in › blog › {slug || "your-post"}</div>
-          <div className="mt-1 text-xl text-primary-glow">{title || "Your post title appears here"}</div>
-          <div className="mt-1 text-sm text-muted-foreground">{metaDesc || "Your meta description appears here. Aim for 150–160 characters that clearly describe the article and include your main keyword."}</div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const SettingsPane = (
-    <div className="space-y-5">
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Category</label>
-        <select className="flex h-11 w-full rounded-md border border-input bg-background px-3 text-sm">
-          <option>SEO</option>
-          <option>Performance</option>
-          <option>Social</option>
-          <option>Web</option>
-        </select>
-      </div>
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Tags</label>
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-input bg-background p-2">
-          {tags.map((t) => (
-            <span key={t} className="inline-flex items-center gap-1 rounded-full bg-accent px-2.5 py-1 text-xs">
-              {t}
-              <button onClick={() => setTags(tags.filter((x) => x !== t))} className="text-muted-foreground hover:text-foreground"><X className="h-3 w-3" /></button>
-            </span>
-          ))}
-          <input
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={addTag}
-            placeholder="Add tag…"
-            className="min-w-[120px] flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          />
-        </div>
-      </div>
-      <div>
-        <label className="mb-1.5 block text-xs tracking-caps text-muted-foreground">Publish date</label>
-        <Input type="datetime-local" className="h-11" />
-      </div>
-    </div>
-  );
-
-  const panes: Record<Tab, JSX.Element> = { Content: ContentPane, Media: MediaPane, SEO: SEOPane, Settings: SettingsPane };
+  if (routeId && isLoading) return <div className="surface-card p-8 text-center text-muted-foreground">Loading post…</div>;
+  if (routeId && !isLoading && !data) return <div className="surface-card p-8 text-center text-muted-foreground">This post was not found.</div>;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
       <div className="flex items-center justify-between gap-3">
-        <Link to="/admin/blogs" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> All blogs
-        </Link>
-        <div className="flex items-center gap-2">
-          <span className={`hidden rounded-full border px-2.5 py-1 text-[10px] tracking-caps md:inline-block ${
-            status === "Published" ? "border-success/30 bg-success/10 text-success" : "border-warning/30 bg-warning/10 text-warning"
-          }`}>{status}</span>
-          <Button variant="subtle" onClick={() => save(false)} className="hidden md:inline-flex"><Save className="h-4 w-4" /> Save draft</Button>
-          <Button variant="hero" onClick={() => save(true)}><Send className="h-4 w-4" /> Publish</Button>
+        <Link to="/admin/blogs" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> All blogs</Link>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="subtle" onClick={() => void save("draft")} disabled={savePost.isPending}><Save className="h-4 w-4" /> Save draft</Button>
+          <Button variant="subtle" onClick={() => void save("review")} disabled={savePost.isPending}>Submit review</Button>
+          <Button variant="hero" onClick={() => void save("published")} disabled={savePost.isPending}><Send className="h-4 w-4" /> Publish</Button>
         </div>
       </div>
-
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        <div className="space-y-5">
-          {/* Tabs */}
-          <div className="flex gap-1 overflow-x-auto rounded-full border border-border bg-surface p-1">
-            {tabs.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`shrink-0 rounded-full px-4 py-2 text-xs tracking-caps transition-colors ${
-                  tab === t ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
+        <section className="surface-card space-y-5 p-5 md:p-7">
+          <Input value={post.title} onChange={(e) => { if (!post.slug || post.slug === slugify(post.title)) update("slug", slugify(e.target.value)); update("title", e.target.value); }} placeholder="Untitled post" className="h-auto border-0 bg-transparent px-0 font-display text-3xl focus-visible:ring-0" />
+          <div>
+            <label className="text-xs tracking-caps text-muted-foreground">Slug</label>
+            <Input value={post.slug} onChange={(e) => update("slug", slugify(e.target.value))} className="mt-1" />
+            <p className={`mt-1 text-xs ${slugAvailable === false ? "text-destructive" : "text-muted-foreground"}`}>
+              {slugAvailable === false ? "This slug is already used." : `/blog/${post.slug || "your-post"}`}
+            </p>
           </div>
-          <div className="surface-card p-5 md:p-7">{panes[tab]}</div>
-        </div>
-
-        {/* Desktop sidebar — always visible */}
-        <aside className="hidden space-y-4 lg:block">
-          <div className="surface-card p-5">
-            <div className="text-xs tracking-caps text-muted-foreground">Status</div>
-            <div className="mt-3 flex gap-2">
-              {(["Draft", "Published"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setStatus(s)}
-                  className={`flex-1 rounded-lg border px-3 py-2 text-xs tracking-caps transition-colors ${
-                    status === s ? "border-primary bg-accent text-foreground" : "border-border bg-surface text-muted-foreground"
-                  }`}
-                >
-                  {s}
-                </button>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant={!preview ? "secondary" : "ghost"} onClick={() => setPreview(false)}>Markdown</Button>
+            <Button type="button" size="sm" variant={preview ? "secondary" : "ghost"} onClick={() => setPreview(true)}>Preview</Button>
+          </div>
+          {preview
+            ? <div className="prose prose-invert min-h-[420px] max-w-none rounded-xl border border-border p-5"><Markdown>{post.content || "*Nothing to preview yet.*"}</Markdown></div>
+            : <Textarea aria-label="Post content" value={post.content} onChange={(e) => update("content", e.target.value)} rows={18} placeholder="Write in Markdown…" className="min-h-[420px] font-mono" />}
+          <div>
+            <label className="text-xs tracking-caps text-muted-foreground">Excerpt</label>
+            <Textarea value={post.excerpt} onChange={(e) => update("excerpt", e.target.value.slice(0, 160))} rows={2} className="mt-1" />
+            <div className="text-right text-xs text-muted-foreground">{post.excerpt.length}/160</div>
+          </div>
+        </section>
+        <aside className="space-y-4">
+          <div className="surface-card space-y-4 p-5">
+            <label className="text-xs tracking-caps text-muted-foreground">Featured image</label>
+            {post.coverUrl && (
+              <div className="relative">
+                <img src={post.coverUrl} alt={post.coverAlt} className="aspect-video w-full rounded-lg object-cover" />
+                <button type="button" onClick={() => setPost((current) => ({ ...current, featuredMediaId: null, coverUrl: null }))} className="absolute right-2 top-2 rounded-full bg-background p-1"><X className="h-4 w-4" /></button>
+              </div>
+            )}
+            <Input value={post.coverAlt} onChange={(e) => update("coverAlt", e.target.value)} placeholder="Alt text" />
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+              <Upload className="h-4 w-4" />{uploading ? "Uploading…" : "Choose image"}
+              <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(e) => void upload(e.target.files?.[0])} disabled={uploading} />
+            </label>
+          </div>
+          <div className="surface-card space-y-4 p-5">
+            <label className="text-xs tracking-caps text-muted-foreground">Category</label>
+            <Select value={post.categoryId || undefined} onValueChange={(value) => update("categoryId", value)}>
+              <SelectTrigger><SelectValue placeholder="Select a category" /></SelectTrigger>
+              <SelectContent>
+                {categories.map((category) => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <div className="flex gap-2">
+              <Input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category" />
+              <Button type="button" variant="subtle" onClick={() => void addCategory()} disabled={createCategory.isPending}>Add</Button>
+            </div>
+            <label className="text-xs tracking-caps text-muted-foreground">Tags</label>
+            <div className="flex flex-wrap gap-2">
+              {post.tagNames.map((item) => (
+                <span key={item} className="rounded-full bg-accent px-2 py-1 text-xs">
+                  {item} <button type="button" onClick={() => update("tagNames", post.tagNames.filter((value) => value !== item))}>×</button>
+                </span>
               ))}
             </div>
+            <Input list="existing-tags" value={tag} onChange={(e) => setTag(e.target.value)} onKeyDown={addTag} placeholder="Type tag, press Enter" />
+            <datalist id="existing-tags">
+              {allTags.map((item) => <option key={item.id} value={item.name} />)}
+            </datalist>
           </div>
-          <div className="surface-card p-5">
-            <div className="text-xs tracking-caps text-muted-foreground">Quick info</div>
-            <dl className="mt-3 space-y-2.5 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Word count</dt><dd className="font-mono">0</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Read time</dt><dd className="font-mono">0 min</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Last saved</dt><dd className="text-muted-foreground">—</dd></div>
-            </dl>
+          <div className="surface-card space-y-3 p-5">
+            <div className="text-xs tracking-caps text-muted-foreground">SEO</div>
+            <Input value={post.metaTitle} onChange={(e) => update("metaTitle", e.target.value.slice(0, 70))} placeholder="Meta title" />
+            <Textarea value={post.metaDescription} onChange={(e) => update("metaDescription", e.target.value.slice(0, 160))} placeholder="Meta description" />
+            <Input value={post.focusKeyword} onChange={(e) => update("focusKeyword", e.target.value)} placeholder="Focus keyword" />
+          </div>
+          <div className="surface-card space-y-3 p-5">
+            <div className="text-sm text-muted-foreground">{words} words · {readTime(post.content)} min read</div>
+            <Button variant="subtle" className="w-full" onClick={() => void save("archived")} disabled={savePost.isPending}>
+              <Archive className="h-4 w-4" /> Archive
+            </Button>
           </div>
         </aside>
       </div>
-
-      {/* Mobile sticky publish bar */}
-      <div className="fixed inset-x-0 bottom-0 z-30 flex gap-2 border-t border-border bg-background/95 p-3 backdrop-blur lg:hidden">
-        <Button variant="subtle" size="lg" onClick={() => save(false)} className="flex-1"><Save className="h-4 w-4" /> Save</Button>
-        <Button variant="hero" size="lg" onClick={() => save(true)} className="flex-1"><Send className="h-4 w-4" /> Publish</Button>
-      </div>
     </div>
   );
-};
-
-export default AdminBlogEditor;
+}

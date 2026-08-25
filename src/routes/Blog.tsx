@@ -1,23 +1,20 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Navbar } from "@/features/marketing/components/layout/Navbar";
 import { Footer } from "@/features/marketing/components/layout/Footer";
 import { StickyMobileCTA } from "@/features/marketing/components/layout/StickyMobileCTA";
-import { mockBlogs } from "@/features/marketing/components/sections/BlogTeaser";
+import { usePublishedPosts } from "@/features/blog/api";
+import { readTime } from "@/features/blog/Markdown";
 
-const allPosts = [
-  ...mockBlogs,
-  { slug: "local-seo-checklist", title: "The local SEO checklist for service businesses", category: "SEO", excerpt: "GMB, citations, schema — the practical list we run for every local client.", date: "March 20, 2026", readTime: "4 min read", cover: "from-primary-deep/40 to-primary/30" },
-  { slug: "meta-ads-creative-2026", title: "Meta ads creative principles that still work in 2026", category: "Performance", excerpt: "What's changed, what hasn't, and the creative formats producing the best ROAS today.", date: "March 14, 2026", readTime: "8 min read", cover: "from-primary/30 to-primary-deep/40" },
-  { slug: "shopify-vs-custom", title: "Shopify vs. custom build: how to choose for your D2C brand", category: "Web", excerpt: "The honest tradeoffs no one tells you before you commit your roadmap.", date: "March 6, 2026", readTime: "6 min read", cover: "from-primary-glow/30 to-primary/40" },
-];
-
-const categories = ["All", "SEO", "Performance", "Social", "Web"];
-
-const Blog = () => {
+export default function Blog() {
+  const { data: posts = [], isLoading, error } = usePublishedPosts();
+  const [category, setCategory] = useState("All");
+  const categories = ["All", ...new Set(posts.map((post) => post.categoryName))];
+  const visible = category === "All" ? posts : posts.filter((post) => post.categoryName === category);
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      <main className="pt-32 pb-20 md:pt-40">
+      <main className="pb-20 pt-32 md:pt-40">
         <section className="container">
           <div className="mx-auto max-w-3xl text-center">
             <div className="mb-4 text-xs tracking-caps text-primary-glow">Blog</div>
@@ -28,30 +25,39 @@ const Blog = () => {
               Tactics, frameworks, and case-led articles from our team — written for operators, not algorithms.
             </p>
           </div>
-
           <div className="mt-10 flex flex-wrap justify-center gap-2">
-            {categories.map((c, i) => (
-              <button key={c} className={`rounded-full border px-4 py-2 text-xs tracking-caps transition-colors ${i === 0 ? "border-primary bg-accent/40 text-foreground" : "border-border bg-surface text-muted-foreground hover:text-foreground"}`}>
-                {c}
+            {categories.map((item) => (
+              <button
+                key={item}
+                onClick={() => setCategory(item)}
+                className={`rounded-full border px-4 py-2 text-xs tracking-caps ${
+                  category === item ? "border-primary bg-accent/40" : "border-border bg-surface text-muted-foreground"
+                }`}
+              >
+                {item}
               </button>
             ))}
           </div>
-
+          {isLoading && <p className="mt-12 text-center text-muted-foreground">Loading articles…</p>}
+          {error && <p className="mt-12 text-center text-destructive">Could not load articles.</p>}
+          {!isLoading && !error && visible.length === 0 && (
+            <p className="mt-12 text-center text-muted-foreground">No published articles yet.</p>
+          )}
           <div className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {allPosts.map((b) => (
-              <Link key={b.slug} to={`/blog/${b.slug}`} className="surface-card group flex flex-col overflow-hidden">
-                <div className={`relative h-48 bg-gradient-to-br ${b.cover}`}>
-                  <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent,hsl(var(--background))_120%)]" />
-                  <span className="absolute left-4 top-4 rounded-full border border-border bg-surface/80 px-2.5 py-1 text-[10px] tracking-caps backdrop-blur">
-                    {b.category}
-                  </span>
-                </div>
+            {visible.map((post) => (
+              <Link key={post.id} to={`/blog/${post.slug}`} className="surface-card group flex flex-col overflow-hidden">
+                {post.coverUrl ? (
+                  <img src={post.coverUrl} alt={post.coverAlt} className="h-48 w-full object-cover" />
+                ) : (
+                  <div className="h-48 bg-gradient-to-br from-primary/40 to-primary-deep/40" />
+                )}
                 <div className="flex flex-1 flex-col p-5">
-                  <h3 className="font-display text-lg font-medium leading-snug transition-colors group-hover:text-primary-glow md:text-xl">{b.title}</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">{b.excerpt}</p>
-                  <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{b.date}</span>
-                    <span>{b.readTime}</span>
+                  <span className="text-[10px] tracking-caps text-primary-glow">{post.categoryName}</span>
+                  <h2 className="mt-2 font-display text-xl group-hover:text-primary-glow">{post.title}</h2>
+                  <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{post.excerpt}</p>
+                  <div className="mt-5 flex justify-between text-xs text-muted-foreground">
+                    <span>{post.publishedAt ? new Date(post.publishedAt).toLocaleDateString() : ""}</span>
+                    <span>{readTime(post.content)} min read</span>
                   </div>
                 </div>
               </Link>
@@ -63,6 +69,4 @@ const Blog = () => {
       <StickyMobileCTA />
     </div>
   );
-};
-
-export default Blog;
+}

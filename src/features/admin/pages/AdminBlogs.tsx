@@ -1,31 +1,33 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
-import { PlusCircle, Search, MoreHorizontal, Edit3, Eye, Trash2 } from "lucide-react";
+import { PlusCircle, Search, Edit3, Eye, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAdminPosts, useDeletePost } from "@/features/blog/api";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import type { BlogPostView } from "@/features/blog/types";
 
-const posts = [
-  { id: "1", title: "7 SEO strategies that actually work for Hyderabad businesses in 2026", category: "SEO", status: "Published", date: "Apr 12, 2026", views: "2,134" },
-  { id: "2", title: "How much should a small business actually spend on Google Ads?", category: "Performance", status: "Published", date: "Apr 4, 2026", views: "1,602" },
-  { id: "3", title: "Instagram content that converts: a framework for D2C brands", category: "Social", status: "Draft", date: "Mar 28, 2026", views: "—" },
-  { id: "4", title: "The local SEO checklist for service businesses", category: "SEO", status: "Published", date: "Mar 20, 2026", views: "980" },
-  { id: "5", title: "Meta ads creative principles that still work in 2026", category: "Performance", status: "Scheduled", date: "Apr 25, 2026", views: "—" },
-  { id: "6", title: "Shopify vs. custom build: how to choose for your D2C brand", category: "Web", status: "Draft", date: "Mar 6, 2026", views: "—" },
-];
-
-const filters = ["All", "Published", "Draft", "Scheduled"];
+const filters = ["All", "Published", "Draft", "Review", "Archived"] as const;
 
 const statusStyles: Record<string, string> = {
-  Published: "border-success/30 bg-success/10 text-success",
-  Draft: "border-warning/30 bg-warning/10 text-warning",
-  Scheduled: "border-primary/40 bg-primary/15 text-primary-glow",
+  published: "border-success/30 bg-success/10 text-success",
+  draft: "border-warning/30 bg-warning/10 text-warning",
+  review: "border-primary/30 bg-primary/10 text-primary",
+  archived: "border-border bg-muted text-muted-foreground",
 };
 
 const AdminBlogs = () => {
-  const [filter, setFilter] = useState("All");
+  const [filter, setFilter] = useState<(typeof filters)[number]>("All");
   const [q, setQ] = useState("");
-
-  const filtered = posts.filter((p) => (filter === "All" || p.status === filter) && p.title.toLowerCase().includes(q.toLowerCase()));
+  const [deleting, setDeleting] = useState<BlogPostView | null>(null);
+  const { data: posts = [], isLoading, error } = useAdminPosts();
+  const deletePost = useDeletePost();
+  const filtered = posts.filter((p) => (filter === "All" || p.status === filter.toLowerCase()) && p.title.toLowerCase().includes(q.toLowerCase()));
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    await deletePost.mutateAsync(deleting.id);
+    setDeleting(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -54,7 +56,6 @@ const AdminBlogs = () => {
         </div>
       </div>
 
-      {/* Mobile filter chips */}
       <div className="flex gap-2 overflow-x-auto pb-1 md:hidden">
         {filters.map((f) => (
           <button
@@ -69,7 +70,9 @@ const AdminBlogs = () => {
         ))}
       </div>
 
-      {/* Desktop table */}
+      {isLoading && <div className="surface-card p-8 text-center text-muted-foreground">Loading posts…</div>}
+      {error && <div className="surface-card p-8 text-center text-destructive">Could not load posts.</div>}
+      {!isLoading && !error && filtered.length === 0 && <div className="surface-card p-8 text-center text-muted-foreground">No posts match this view.</div>}
       <div className="surface-card hidden overflow-hidden md:block">
         <table className="w-full text-sm">
           <thead>
@@ -78,7 +81,6 @@ const AdminBlogs = () => {
               <th className="px-5 py-3 font-medium">Category</th>
               <th className="px-5 py-3 font-medium">Status</th>
               <th className="px-5 py-3 font-medium">Date</th>
-              <th className="px-5 py-3 font-medium">Views</th>
               <th className="px-5 py-3" />
             </tr>
           </thead>
@@ -88,17 +90,16 @@ const AdminBlogs = () => {
                 <td className="max-w-md px-5 py-4">
                   <Link to={`/admin/blogs/edit/${p.id}`} className="block truncate font-medium hover:text-primary-glow">{p.title}</Link>
                 </td>
-                <td className="px-5 py-4 text-muted-foreground">{p.category}</td>
+                <td className="px-5 py-4 text-muted-foreground">{p.categoryName}</td>
                 <td className="px-5 py-4">
                   <span className={`rounded-full border px-2.5 py-1 text-[10px] tracking-caps ${statusStyles[p.status]}`}>{p.status}</span>
                 </td>
-                <td className="px-5 py-4 text-muted-foreground">{p.date}</td>
-                <td className="px-5 py-4 font-mono text-muted-foreground">{p.views}</td>
+                <td className="px-5 py-4 text-muted-foreground">{new Date(p.updatedAt).toLocaleDateString()}</td>
                 <td className="px-5 py-4">
                   <div className="flex items-center justify-end gap-1">
                     <Link to={`/admin/blogs/edit/${p.id}`} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"><Edit3 className="h-4 w-4" /></Link>
-                    <button className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"><Eye className="h-4 w-4" /></button>
-                    <button className="rounded-md p-2 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
+                    {p.status === "published" && <Link to={`/blog/${p.slug}`} target="_blank" className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"><Eye className="h-4 w-4" /></Link>}
+                    <button aria-label={`Delete ${p.title}`} onClick={() => setDeleting(p)} className="rounded-md p-2 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -107,21 +108,32 @@ const AdminBlogs = () => {
         </table>
       </div>
 
-      {/* Mobile cards */}
       <div className="space-y-3 md:hidden">
         {filtered.map((p) => (
           <div key={p.id} className="surface-card p-4">
             <div className="flex items-start justify-between gap-3">
               <Link to={`/admin/blogs/edit/${p.id}`} className="flex-1 text-sm font-medium leading-snug">{p.title}</Link>
-              <button className="shrink-0 rounded-md p-1.5 text-muted-foreground"><MoreHorizontal className="h-4 w-4" /></button>
+              <button aria-label={`Delete ${p.title}`} onClick={() => setDeleting(p)} className="shrink-0 rounded-md p-1.5 text-destructive"><Trash2 className="h-4 w-4" /></button>
             </div>
             <div className="mt-3 flex items-center gap-2">
               <span className={`rounded-full border px-2 py-0.5 text-[10px] tracking-caps ${statusStyles[p.status]}`}>{p.status}</span>
-              <span className="text-[11px] text-muted-foreground">{p.category} · {p.date}</span>
+              <span className="text-[11px] text-muted-foreground">{p.categoryName} · {new Date(p.updatedAt).toLocaleDateString()}</span>
             </div>
           </div>
         ))}
       </div>
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this post?</AlertDialogTitle>
+            <AlertDialogDescription>This hides “{deleting?.title}” from the public site. The record is kept in the database.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()} className="bg-destructive text-destructive-foreground">Delete post</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
