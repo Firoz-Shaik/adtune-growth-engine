@@ -10,6 +10,8 @@ import { AdminLayout } from "@/features/admin/layout/AdminLayout.tsx";
 import AdminDashboard from "@/features/admin/pages/AdminDashboard.tsx";
 import AdminBlogs from "@/features/admin/pages/AdminBlogs.tsx";
 import AdminBlogEditor from "@/features/admin/pages/AdminBlogEditor.tsx";
+import AdminLogin from "@/features/auth/AdminLogin";
+import { AdminGuard } from "@/features/auth/AdminGuard";
 
 export function AppRouter() {
   return (
@@ -21,13 +23,16 @@ export function AppRouter() {
         <Route path="/blog" element={<Blog />} />
         <Route path="/blog/:slug" element={<BlogPost />} />
         <Route path="/services/:slug" element={<ServicePage />} />
-        <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<AdminDashboard />} />
-          <Route path="blogs" element={<AdminBlogs />} />
-          <Route path="blogs/new" element={<AdminBlogEditor />} />
-          <Route path="blogs/edit/:id" element={<AdminBlogEditor />} />
-          <Route path="media" element={<AdminDashboard />} />
-          <Route path="settings" element={<AdminDashboard />} />
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route element={<AdminGuard />}>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminDashboard />} />
+            <Route path="blogs" element={<AdminBlogs />} />
+            <Route path="blogs/new" element={<AdminBlogEditor />} />
+            <Route path="blogs/edit/:id" element={<AdminBlogEditor />} />
+            <Route path="media" element={<AdminDashboard />} />
+            <Route path="settings" element={<AdminDashboard />} />
+          </Route>
         </Route>
         {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
         <Route path="*" element={<NotFound />} />

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, FileText, PlusCircle, Image as ImageIcon, Settings, ExternalLink, Menu, X } from "lucide-react";
+import { LayoutDashboard, FileText, PlusCircle, Image as ImageIcon, Settings, ExternalLink, Menu, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/adtune-logo.jpg";
+import { useAuth } from "@/features/auth/AuthProvider";
 
 const nav = [
   { to: "/admin", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -15,6 +16,7 @@ const nav = [
 export function AdminLayout() {
   const [open, setOpen] = useState(false);
   const { pathname } = useLocation();
+  const { user, signOut } = useAuth();
 
   const Sidebar = (
     <aside className="flex h-full flex-col bg-sidebar border-r border-sidebar-border">
@@ -52,6 +54,9 @@ export function AdminLayout() {
         <Link to="/" className="flex items-center justify-between rounded-lg px-3 py-2.5 text-sm text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
           View site <ExternalLink className="h-4 w-4" />
         </Link>
+        <button onClick={() => void signOut()} className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
+          Sign out <LogOut className="h-4 w-4" />
+        </button>
       </div>
     </aside>
   );
@@ -92,7 +97,7 @@ export function AdminLayout() {
           <div className="flex items-center gap-3">
             <div className="hidden text-right md:block">
               <div className="text-xs text-muted-foreground">Signed in as</div>
-              <div className="text-sm font-medium">Admin</div>
+              <div className="max-w-48 truncate text-sm font-medium">{user?.email}</div>
             </div>
             <div className="h-9 w-9 rounded-full bg-gradient-primary" />
           </div>
