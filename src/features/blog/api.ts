@@ -288,6 +288,36 @@ export function useSavePost() {
   });
 }
 
+/** Best-effort insert/update during tab close. Fetch keepalive can outlive the page; React Query cannot. */
+export function upsertPostKeepalive({
+  id,
+  input,
+  authorId,
+  accessToken,
+}: {
+  id: string;
+  input: BlogPostInput;
+  authorId: string;
+  accessToken: string;
+}) {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  if (!url || !anonKey || !accessToken) return;
+  const body = JSON.stringify({ ...input, id, author_id: authorId });
+  if (body.length > 60_000) return;
+  void fetch(`${url.replace(/\/$/, "")}/rest/v1/blog_posts?on_conflict=id`, {
+    method: "POST",
+    keepalive: true,
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body,
+  });
+}
+
 export function useDeletePost() {
   const client = useQueryClient();
   return useMutation({

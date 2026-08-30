@@ -52,11 +52,11 @@ export interface BlogPost {
   id: string;
   title: string;
   slug: string;
-  excerpt: string | null;
+  excerpt: string;
   content: string;
   featured_media_id: string | null;
   author_id: string;
-  category_id: string | null;
+  category_id: string;
   status: BlogPostStatus;
   published_at: string | null;
   scheduled_at: string | null;

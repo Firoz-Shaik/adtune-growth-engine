@@ -12,12 +12,14 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/features/auth/AuthProvider";
-import { useAdminPost, useCategories, useCreateCategory, useDeletePost, useMediaLibrary, useSavePost, useSlugAvailable, useTags } from "@/features/blog/api";
+import { upsertPostKeepalive, useAdminPost, useCategories, useCreateCategory, useDeletePost, useMediaLibrary, useSavePost, useSlugAvailable, useTags } from "@/features/blog/api";
 import { Markdown, readTime } from "@/features/blog/Markdown";
 import { uploadFeaturedMedia } from "@/features/blog/media";
+import { clearComposerDraft, isBlankComposer, readComposerDraft, writeComposerDraft } from "@/features/blog/draftStorage";
 import { publicMediaUrl } from "@/lib/supabase/client";
 import type { BlogPostInput, BlogPostStatus } from "@/lib/supabase/types";
-import { slugify, validPost } from "@/features/blog/validation";
+import { formatSaveError } from "@/features/blog/errors";
+import { draftIssues, publishIssues, slugify, validDraft, validPost } from "@/features/blog/validation";
 import { cn } from "@/lib/utils";
 
 type EditorState = {
@@ -47,6 +49,16 @@ const empty: EditorState = {
 
 const serialize = (post: EditorState, status: BlogPostStatus) => JSON.stringify({ post, status });
 
+function toInputFrom(state: EditorState, nextStatus: BlogPostStatus): BlogPostInput {
+  return {
+    title: state.title.trim(), slug: state.slug, excerpt: state.excerpt, content: state.content,
+    featured_media_id: state.featuredMediaId, category_id: state.categoryId, status: nextStatus,
+    published_at: nextStatus === "published" ? state.publishedAt || new Date().toISOString() : state.publishedAt,
+    archived_at: nextStatus === "archived" ? state.archivedAt || new Date().toISOString() : null,
+    meta_title: state.metaTitle.trim() || null, meta_description: state.metaDescription.trim() || null, focus_keyword: state.focusKeyword.trim() || null,
+  };
+}
+
 function insertAtCursor(content: string, start: number, end: number, before: string, after = "") {
   const selected = content.slice(start, end) || "text";
   return {
@@ -66,10 +78,18 @@ function savedCopy(at: Date | null, status: BlogPostStatus) {
 
 export default function AdminBlogEditor() {
   const { id: routeId } = useParams();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [postId] = useState(() => routeId || crypto.randomUUID());
+  const [opened] = useState(() => {
+    if (routeId) return { postId: routeId, post: empty, status: "draft" as BlogPostStatus, resumed: false, savedAt: null as number | null };
+    const stored = readComposerDraft();
+    if (stored && !isBlankComposer(stored.post) && stored.status !== "published" && stored.status !== "archived") {
+      return { postId: stored.postId, post: stored.post, status: stored.status, resumed: true, savedAt: stored.updatedAt };
+    }
+    return { postId: crypto.randomUUID(), post: empty, status: "draft" as BlogPostStatus, resumed: false, savedAt: null as number | null };
+  });
+  const [postId, setPostId] = useState(opened.postId);
   const { data, isLoading } = useAdminPost(routeId);
   const { data: categories = [] } = useCategories();
   const { data: allTags = [] } = useTags();
@@ -77,8 +97,9 @@ export default function AdminBlogEditor() {
   const savePost = useSavePost();
   const deletePost = useDeletePost();
   const createCategory = useCreateCategory();
-  const [post, setPost] = useState<EditorState>(empty);
-  const [status, setStatus] = useState<BlogPostStatus>("draft");
+  const [post, setPost] = useState<EditorState>(opened.post);
+  const [status, setStatus] = useState<BlogPostStatus>(opened.status);
+  const [resumed, setResumed] = useState(opened.resumed);
   const [mode, setMode] = useState<EditorMode>("write");
   const [tag, setTag] = useState("");
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -90,7 +111,7 @@ export default function AdminBlogEditor() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(opened.savedAt ? new Date(opened.savedAt) : null);
   const [tick, setTick] = useState(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const snapshot = useRef("");
@@ -124,18 +145,17 @@ export default function AdminBlogEditor() {
   const filteredCategories = categories.filter((item) => item.name.toLowerCase().includes(categoryQuery.trim().toLowerCase()));
   const update = <K extends keyof EditorState>(key: K, value: EditorState[K]) => setPost((current) => ({ ...current, [key]: value }));
 
-  const toInput = (nextStatus: BlogPostStatus): BlogPostInput => ({
-    title: post.title.trim(), slug: post.slug, excerpt: post.excerpt, content: post.content,
-    featured_media_id: post.featuredMediaId, category_id: post.categoryId || null, status: nextStatus,
-    published_at: nextStatus === "published" ? post.publishedAt || new Date().toISOString() : nextStatus === "draft" ? post.publishedAt : post.publishedAt,
-    archived_at: nextStatus === "archived" ? post.archivedAt || new Date().toISOString() : null,
-    meta_title: post.metaTitle.trim() || null, meta_description: post.metaDescription.trim() || null, focus_keyword: post.focusKeyword.trim() || null,
-  });
+  const toInput = (nextStatus: BlogPostStatus) => toInputFrom(post, nextStatus);
+
+  const canDraft = validDraft(toInput("draft"));
+  const canPublish = validPost(toInput("published")) && slugAvailable !== false;
+  const blockingPublish = publishIssues(toInput("published"))[0] || (slugAvailable === false ? "This slug is already used." : "");
 
   const save = async (nextStatus: BlogPostStatus, silent = false) => {
     const input = toInput(nextStatus);
-    if (!validPost(input)) {
-      if (!silent) toast({ variant: "destructive", title: "Complete required fields", description: "Add a title, valid slug, and body before saving." });
+    const issues = nextStatus === "published" ? publishIssues(input) : draftIssues(input);
+    if (issues.length) {
+      if (!silent) toast({ variant: "destructive", title: nextStatus === "published" ? "Cannot publish yet" : "Cannot save draft", description: issues[0] });
       return false;
     }
     if (slugAvailable === false) {
@@ -144,26 +164,113 @@ export default function AdminBlogEditor() {
     }
     try {
       await savePost.mutateAsync({ id: postId, input, authorId: user!.id, tagNames: post.tagNames });
+      const nextPost = { ...post, publishedAt: input.published_at, archivedAt: input.archived_at };
       setStatus(nextStatus);
       setPost((current) => ({ ...current, publishedAt: input.published_at, archivedAt: input.archived_at }));
       setSavedAt(new Date());
-      snapshot.current = serialize({ ...post, publishedAt: input.published_at, archivedAt: input.archived_at }, nextStatus);
+      snapshot.current = serialize(nextPost, nextStatus);
+      if (nextStatus === "published" || nextStatus === "archived") clearComposerDraft(postId);
+      else writeComposerDraft({ postId, status: nextStatus, post: nextPost });
       if (!silent) toast({ title: nextStatus === "published" ? "Post published" : nextStatus === "archived" ? "Post archived" : "Draft saved" });
       if (!routeId) navigate(`/admin/blogs/edit/${postId}`, { replace: true });
       return true;
     } catch (error) {
-      if (!silent) toast({ variant: "destructive", title: "Save failed", description: error instanceof Error ? error.message : "Try again." });
+      toast({ variant: "destructive", title: "Save failed", description: formatSaveError(error) });
       return false;
     }
   };
 
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const latestRef = useRef({ post, status, postId, user, session, routeId });
+  latestRef.current = { post, status, postId, user, session, routeId };
+
+  const persistLocal = (state = post, nextStatus = status, id = postId) => {
+    if (nextStatus === "published" || nextStatus === "archived") {
+      clearComposerDraft(id);
+      return;
+    }
+    if (isBlankComposer(state)) return;
+    const stored = readComposerDraft();
+    if (routeId && stored && stored.postId !== id) return;
+    if (routeId && !stored) return;
+    writeComposerDraft({ postId: id, status: nextStatus, post: state });
+  };
+
+  useEffect(() => {
+    persistLocal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post, status, postId, routeId]);
+
   useEffect(() => {
     if (!user || serialize(post, status) === snapshot.current) return;
-    const timer = window.setTimeout(() => { void save(status === "published" ? "published" : "draft", true); }, 2000);
+    if (status === "published" ? !validPost(toInput("published")) : !canDraft) return;
+    const timer = window.setTimeout(() => { void saveRef.current(status === "published" ? "published" : "draft", true); }, 2000);
     return () => window.clearTimeout(timer);
-    // Autosave on field changes; save identity is stable enough for this editor.
+    // Autosave once required draft fields exist; unmount/pagehide flush uses refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [post, status, user]);
+  }, [post, status, user, canDraft]);
+
+  useEffect(() => {
+    const persistFromLatest = () => {
+      const current = latestRef.current;
+      if (current.status === "published" || current.status === "archived") {
+        clearComposerDraft(current.postId);
+        return;
+      }
+      if (isBlankComposer(current.post)) return;
+      const stored = readComposerDraft();
+      if (current.routeId && stored && stored.postId !== current.postId) return;
+      if (current.routeId && !stored) return;
+      writeComposerDraft({ postId: current.postId, status: current.status, post: current.post });
+    };
+    const canSave = (state: EditorState, nextStatus: BlogPostStatus) => (
+      nextStatus === "published" ? validPost(toInputFrom(state, "published")) : validDraft(toInputFrom(state, "draft"))
+    );
+    const flushKeepalive = () => {
+      const current = latestRef.current;
+      persistFromLatest();
+      if (!current.user || serialize(current.post, current.status) === snapshot.current) return;
+      if (!canSave(current.post, current.status)) return;
+      const nextStatus = current.status === "published" ? "published" : "draft";
+      const token = current.session?.access_token;
+      if (token) {
+        upsertPostKeepalive({
+          id: current.postId,
+          input: toInputFrom(current.post, nextStatus),
+          authorId: current.user.id,
+          accessToken: token,
+        });
+      }
+    };
+    const flushFull = () => {
+      const current = latestRef.current;
+      persistFromLatest();
+      if (!current.user || serialize(current.post, current.status) === snapshot.current) return;
+      if (!canSave(current.post, current.status)) return;
+      void saveRef.current(current.status === "published" ? "published" : "draft", true);
+    };
+    const onHidden = () => { if (document.visibilityState === "hidden") flushKeepalive(); };
+    window.addEventListener("pagehide", flushKeepalive);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pagehide", flushKeepalive);
+      document.removeEventListener("visibilitychange", onHidden);
+      flushFull();
+    };
+  }, []);
+
+  const startNew = () => {
+    clearComposerDraft(postId);
+    const nextId = crypto.randomUUID();
+    setPostId(nextId);
+    setPost(empty);
+    setStatus("draft");
+    setSavedAt(null);
+    setResumed(false);
+    snapshot.current = serialize(empty, "draft");
+    if (routeId) navigate("/admin/blogs/new");
+  };
 
   const applyFormat = (before: string, after = "") => {
     const field = editorRef.current;
@@ -243,7 +350,15 @@ export default function AdminBlogEditor() {
           <Button type="button" variant="ghost" size="sm" onClick={() => setMode((current) => current === "preview" ? "write" : "preview")}>
             {mode === "preview" ? "Write" : "Preview"}
           </Button>
-          <Button variant="hero" size="sm" onClick={() => void save("published")} disabled={savePost.isPending}>Publish</Button>
+          <Button
+            variant="hero"
+            size="sm"
+            onClick={() => void save("published")}
+            disabled={savePost.isPending || !canPublish}
+            title={!canPublish ? blockingPublish : undefined}
+          >
+            Publish
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label="More actions"><MoreHorizontal className="h-4 w-4" /></Button>
@@ -257,6 +372,7 @@ export default function AdminBlogEditor() {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem className="text-destructive" onClick={async () => {
                     await deletePost.mutateAsync(postId);
+                    clearComposerDraft(postId);
                     navigate("/admin/blogs");
                   }}>Delete</DropdownMenuItem>
                 </>
@@ -268,6 +384,13 @@ export default function AdminBlogEditor() {
 
       <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
         <section className="mx-auto w-full max-w-[740px]">
+          {resumed && !routeId && (
+            <div className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-border bg-accent/40 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">Resumed your draft.</span>
+              <button type="button" className="shrink-0 text-primary hover:underline" onClick={startNew}>Start new post</button>
+            </div>
+          )}
+          <label className="mb-2 block text-xs text-muted-foreground">Title <RequiredStar /></label>
           <input
             value={post.title}
             onChange={(event) => {
@@ -275,9 +398,11 @@ export default function AdminBlogEditor() {
               update("title", event.target.value);
             }}
             placeholder="Add a clear, compelling title"
+            aria-required
             className="w-full bg-transparent font-display text-4xl font-medium leading-tight text-foreground outline-none placeholder:text-muted-foreground/50 md:text-5xl"
           />
           <div className="mt-3 text-sm text-muted-foreground">
+            <span className="mr-2 text-xs">Slug <RequiredStar /></span>
             {slugAvailable === false ? <span className="text-destructive">This slug is already used.</span> : editingSlug ? (
               <span className="inline-flex items-center gap-2">
                 adtunedigital.in/blog/
@@ -308,12 +433,14 @@ export default function AdminBlogEditor() {
             </div>
             {mode !== "preview" && <FormatBar onFormat={applyFormat} />}
           </div>
+          <div className="mt-2 text-xs text-muted-foreground">Body <RequiredStar /></div>
 
           <div className={cn("mt-3", mode === "split" && "grid gap-6 xl:grid-cols-2")}>
             {mode !== "preview" && (
               <Textarea
                 ref={editorRef}
                 aria-label="Post content"
+                aria-required
                 value={post.content}
                 onChange={(event) => update("content", event.target.value)}
                 placeholder="Start writing…"
@@ -381,10 +508,10 @@ export default function AdminBlogEditor() {
             </RailSection>
 
             <RailSection title="Organization" defaultOpen>
-              <label className="text-xs text-muted-foreground">Category</label>
+              <label className="text-xs text-muted-foreground">Category <RequiredStar /></label>
               <Popover open={categoryOpen} onOpenChange={setCategoryOpen}>
                 <PopoverTrigger asChild>
-                  <Button type="button" variant="outline" className="mt-1 h-10 w-full justify-between font-normal">
+                  <Button type="button" variant="outline" className="mt-1 h-10 w-full justify-between font-normal" aria-required>
                     {selectedCategory?.name || "Select a category"}
                     <ChevronDown className="h-4 w-4 opacity-50" />
                   </Button>
@@ -402,6 +529,18 @@ export default function AdminBlogEditor() {
                   <button type="button" className="mt-2 text-xs text-primary hover:underline" onClick={() => { setCategoryOpen(false); setManageCategories(true); }}>Manage categories</button>
                 </PopoverContent>
               </Popover>
+              {!post.categoryId && (
+                <p className="mt-2 text-xs text-warning">
+                  {categories.length === 0 ? (
+                    <>
+                      Create a category to save this as a draft.{" "}
+                      <button type="button" className="text-primary hover:underline" onClick={() => setManageCategories(true)}>Create one</button>
+                    </>
+                  ) : (
+                    "Select a category to save this as a draft."
+                  )}
+                </p>
+              )}
 
               <label className="mt-4 block text-xs text-muted-foreground">Tags</label>
               <div className="mt-1 flex flex-wrap gap-1.5">
@@ -475,6 +614,10 @@ export default function AdminBlogEditor() {
       </Dialog>
     </div>
   );
+}
+
+function RequiredStar() {
+  return <span className="text-destructive" aria-hidden="true">*</span>;
 }
 
 function RailSection({ title, hint, defaultOpen = false, children }: { title: string; hint?: string; defaultOpen?: boolean; children: ReactNode }) {
