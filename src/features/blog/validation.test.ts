@@ -5,9 +5,9 @@ const post = { title: "Useful article", slug: "useful-article", excerpt: "A usef
 
 describe("blog editor validation", () => {
   it("accepts a complete Markdown post", () => expect(validPost(post)).toBe(true));
-  it("requires excerpt when publishing", () => {
-    expect(validPost({ ...post, excerpt: "" }, true)).toBe(false);
-    expect(validPost(post, true)).toBe(true);
+  it("allows an empty excerpt and rejects one over 160 characters", () => {
+    expect(validPost({ ...post, excerpt: "" })).toBe(true);
+    expect(validPost({ ...post, excerpt: "x".repeat(161) })).toBe(false);
   });
   it("rejects invalid slugs and empty content", () => {
     expect(validPost({ ...post, slug: "Bad Slug" })).toBe(false);
