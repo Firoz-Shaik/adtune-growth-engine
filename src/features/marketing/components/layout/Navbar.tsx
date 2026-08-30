@@ -8,6 +8,7 @@ import logo from "@/assets/adtune-logo.jpg";
 const navItems = [
   { label: "Home", href: "/" },
   { label: "Process", href: "/#process" },
+  { label: "Blog", href: "/blog" },
   { label: "Contact", href: "/contact" },
 ];
 

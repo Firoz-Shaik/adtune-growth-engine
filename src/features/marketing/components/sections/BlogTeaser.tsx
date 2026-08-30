@@ -1,37 +1,11 @@
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
-
-export const mockBlogs = [
-  {
-    slug: "seo-strategies-for-hyderabad-businesses-2026",
-    title: "7 SEO strategies that actually work for Hyderabad businesses in 2026",
-    category: "SEO",
-    excerpt: "Local intent, schema, and the search behaviors that move the needle for SMEs in Telangana.",
-    date: "April 12, 2026",
-    readTime: "6 min read",
-    cover: "from-primary/40 to-primary-deep/40",
-  },
-  {
-    slug: "google-ads-budget-small-business",
-    title: "How much should a small business actually spend on Google Ads?",
-    category: "Performance",
-    excerpt: "A no-fluff breakdown of budgets, expectations, and the math behind a healthy ROAS.",
-    date: "April 4, 2026",
-    readTime: "5 min read",
-    cover: "from-primary-glow/40 to-primary/30",
-  },
-  {
-    slug: "instagram-content-that-converts",
-    title: "Instagram content that converts: a framework for D2C brands",
-    category: "Social",
-    excerpt: "The 4-bucket content system we use to scale brand-led D2C accounts past 6-figure revenue.",
-    date: "March 28, 2026",
-    readTime: "7 min read",
-    cover: "from-primary/30 to-primary-glow/40",
-  },
-];
+import { usePublishedPosts } from "@/features/blog/api";
+import { readTime } from "@/features/blog/Markdown";
 
 export function BlogTeaser() {
+  const { data: blogs = [] } = usePublishedPosts(3);
+  if (!blogs.length) return null;
   return (
     <section className="py-20 md:py-28">
       <div className="container">
@@ -48,12 +22,13 @@ export function BlogTeaser() {
         </div>
 
         <div className="mt-10 grid gap-5 md:grid-cols-3">
-          {mockBlogs.map((b) => (
+          {blogs.map((b) => (
             <Link key={b.slug} to={`/blog/${b.slug}`} className="surface-card group flex flex-col overflow-hidden">
-              <div className={`relative h-44 bg-gradient-to-br ${b.cover}`}>
+              <div className="relative h-44 bg-gradient-to-br from-primary/40 to-primary-deep/40">
+                {b.coverUrl && <img src={b.coverUrl} alt={b.coverAlt} className="absolute inset-0 h-full w-full object-cover" />}
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent,hsl(var(--background))_120%)]" />
                 <span className="absolute left-4 top-4 rounded-full border border-border bg-surface/80 px-2.5 py-1 text-[10px] tracking-caps text-foreground backdrop-blur">
-                  {b.category}
+                  {b.categoryName}
                 </span>
               </div>
               <div className="flex flex-1 flex-col p-5">
@@ -62,8 +37,8 @@ export function BlogTeaser() {
                 </h3>
                 <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{b.excerpt}</p>
                 <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{b.date}</span>
-                  <span>{b.readTime}</span>
+                  <span>{b.publishedAt ? new Date(b.publishedAt).toLocaleDateString() : ""}</span>
+                  <span>{readTime(b.content)} min read</span>
                 </div>
               </div>
             </Link>

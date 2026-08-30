@@ -1,25 +1,21 @@
 import { Link } from "react-router-dom";
-import { FileText, Eye, Edit3, PlusCircle, TrendingUp, ArrowUpRight } from "lucide-react";
+import { FileText, Eye, Edit3, PlusCircle, ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const stats = [
-  { label: "Total posts", value: "24", delta: "+3 this month", icon: FileText },
-  { label: "Published", value: "18", delta: "75% live", icon: Eye },
-  { label: "Drafts", value: "6", delta: "Awaiting review", icon: Edit3 },
-  { label: "Views (30d)", value: "12.4K", delta: "+18%", icon: TrendingUp },
-];
-
-const recent = [
-  { title: "7 SEO strategies that actually work for Hyderabad businesses in 2026", status: "Published", date: "Apr 12", views: "2.1K" },
-  { title: "How much should a small business actually spend on Google Ads?", status: "Published", date: "Apr 4", views: "1.6K" },
-  { title: "Instagram content that converts: a framework for D2C brands", status: "Draft", date: "Mar 28", views: "—" },
-  { title: "The local SEO checklist for service businesses", status: "Published", date: "Mar 20", views: "980" },
-];
+import { useAdminPosts } from "@/features/blog/api";
 
 const AdminDashboard = () => {
+  const { data: posts = [], isLoading } = useAdminPosts();
+  const published = posts.filter((post) => post.status === "published").length;
+  const drafts = posts.filter((post) => post.status === "draft" || post.status === "review").length;
+  const stats = [
+    { label: "Total posts", value: String(posts.length), delta: "All content", icon: FileText },
+    { label: "Published", value: String(published), delta: "Live now", icon: Eye },
+    { label: "Drafts", value: String(drafts), delta: "Awaiting review", icon: Edit3 },
+  ];
+  const recent = posts.slice(0, 5);
   return (
     <div className="space-y-8">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3">
         {stats.map((s) => (
           <div key={s.label} className="surface-card p-5">
             <div className="flex items-start justify-between">
@@ -44,14 +40,16 @@ const AdminDashboard = () => {
             <Link to="/admin/blogs" className="text-sm text-primary-glow hover:text-foreground">View all →</Link>
           </div>
           <ul className="divide-y divide-border">
-            {recent.map((r, i) => (
-              <li key={i} className="flex items-center justify-between gap-4 p-5 hover:bg-accent/20 transition-colors">
+            {isLoading && <li className="p-5 text-sm text-muted-foreground">Loading posts…</li>}
+            {!isLoading && recent.length === 0 && <li className="p-5 text-sm text-muted-foreground">No posts yet.</li>}
+            {recent.map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-4 p-5 hover:bg-accent/20 transition-colors">
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{r.title}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{r.date} · {r.views} views</div>
+                  <Link to={`/admin/blogs/edit/${r.id}`} className="truncate text-sm font-medium hover:text-primary-glow">{r.title}</Link>
+                  <div className="mt-1 text-xs text-muted-foreground">{new Date(r.updatedAt).toLocaleDateString()}</div>
                 </div>
                 <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] tracking-caps ${
-                  r.status === "Published"
+                  r.status === "published"
                     ? "border-success/30 bg-success/10 text-success"
                     : "border-warning/30 bg-warning/10 text-warning"
                 }`}>

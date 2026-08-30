@@ -46,17 +46,17 @@ export function SeoMeta({ title, description, keywords = [], image, author }: Se
     }
     ensureMetaTag("name", "robots").setAttribute("content", "index, follow");
 
-    const ogImage = image || "/adtune-logo.jpg"; // Default image
+    const ogImage = image?.startsWith("http") ? image : `${SITE_URL}${image || "/adtune-logo.jpg"}`;
     ensureMetaTag("property", "og:title").setAttribute("content", title);
     ensureMetaTag("property", "og:description").setAttribute("content", description);
     ensureMetaTag("property", "og:type").setAttribute("content", "website");
     ensureMetaTag("property", "og:url").setAttribute("content", `${SITE_URL}${pathname}`);
-    ensureMetaTag("property", "og:image").setAttribute("content", `${SITE_URL}${ogImage}`);
+    ensureMetaTag("property", "og:image").setAttribute("content", ogImage);
 
     ensureMetaTag("name", "twitter:card").setAttribute("content", "summary_large_image");
     ensureMetaTag("name", "twitter:title").setAttribute("content", title);
     ensureMetaTag("name", "twitter:description").setAttribute("content", description);
-    ensureMetaTag("name", "twitter:image").setAttribute("content", `${SITE_URL}${ogImage}`);
+    ensureMetaTag("name", "twitter:image").setAttribute("content", ogImage);
 
     ensureCanonical().setAttribute("href", `${SITE_URL}${pathname}`);
 
