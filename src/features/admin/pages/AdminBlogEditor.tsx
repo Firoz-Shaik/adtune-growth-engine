@@ -1,18 +1,24 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Archive, ArrowLeft, Save, Send, Upload, X } from "lucide-react";
+import {
+  ArrowLeft, Bold, ChevronDown, Code, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, MoreHorizontal, Quote, Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/features/auth/AuthProvider";
-import { useAdminPost, useCategories, useCreateCategory, useSavePost, useSlugAvailable, useTags } from "@/features/blog/api";
+import { useAdminPost, useCategories, useCreateCategory, useDeletePost, useMediaLibrary, useSavePost, useSlugAvailable, useTags } from "@/features/blog/api";
 import { Markdown, readTime } from "@/features/blog/Markdown";
 import { uploadFeaturedMedia } from "@/features/blog/media";
 import { publicMediaUrl } from "@/lib/supabase/client";
 import type { BlogPostInput, BlogPostStatus } from "@/lib/supabase/types";
 import { slugify, validPost } from "@/features/blog/validation";
+import { cn } from "@/lib/utils";
 
 type EditorState = {
   title: string;
@@ -31,11 +37,32 @@ type EditorState = {
   archivedAt: string | null;
 };
 
+type EditorMode = "write" | "preview" | "split";
+
 const empty: EditorState = {
   title: "", slug: "", excerpt: "", content: "", categoryId: "", tagNames: [],
   featuredMediaId: null, coverUrl: null, coverAlt: "", metaTitle: "", metaDescription: "", focusKeyword: "",
   publishedAt: null, archivedAt: null,
 };
+
+const serialize = (post: EditorState, status: BlogPostStatus) => JSON.stringify({ post, status });
+
+function insertAtCursor(content: string, start: number, end: number, before: string, after = "") {
+  const selected = content.slice(start, end) || "text";
+  return {
+    next: content.slice(0, start) + before + selected + after + content.slice(end),
+    cursor: start + before.length + selected.length + after.length,
+  };
+}
+
+function savedCopy(at: Date | null, status: BlogPostStatus) {
+  if (!at) return status === "published" ? "Not published yet" : "Not saved yet";
+  const seconds = Math.round((Date.now() - at.getTime()) / 1000);
+  const when = seconds < 20 ? "just now" : seconds < 60 ? "a moment ago" : at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (status === "published") return `Published · Saved ${when}`;
+  if (status === "archived") return `Archived · Saved ${when}`;
+  return `Draft saved ${when}`;
+}
 
 export default function AdminBlogEditor() {
   const { id: routeId } = useParams();
@@ -46,75 +73,123 @@ export default function AdminBlogEditor() {
   const { data, isLoading } = useAdminPost(routeId);
   const { data: categories = [] } = useCategories();
   const { data: allTags = [] } = useTags();
+  const { data: library = [] } = useMediaLibrary();
   const savePost = useSavePost();
+  const deletePost = useDeletePost();
   const createCategory = useCreateCategory();
   const [post, setPost] = useState<EditorState>(empty);
-  const [preview, setPreview] = useState(false);
+  const [status, setStatus] = useState<BlogPostStatus>("draft");
+  const [mode, setMode] = useState<EditorMode>("write");
   const [tag, setTag] = useState("");
+  const [categoryQuery, setCategoryQuery] = useState("");
   const [newCategory, setNewCategory] = useState("");
+  const [editingSlug, setEditingSlug] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [manageCategories, setManageCategories] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [tick, setTick] = useState(0);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const snapshot = useRef("");
   const { data: slugAvailable } = useSlugAvailable(post.slug, postId);
-  const isExisting = Boolean(routeId);
+  const isExisting = Boolean(routeId) || Boolean(data);
 
   useEffect(() => {
     if (!data) return;
-    setPost({
-      title: data.title,
-      slug: data.slug,
-      excerpt: data.excerpt,
-      content: data.content,
-      categoryId: data.categoryId || "",
-      tagNames: data.tags.map((item) => item.name),
-      featuredMediaId: data.featuredMediaId,
-      coverUrl: data.coverUrl,
-      coverAlt: data.coverAlt,
-      metaTitle: data.metaTitle || "",
-      metaDescription: data.metaDescription || "",
-      focusKeyword: data.focusKeyword || "",
-      publishedAt: data.publishedAt,
-      archivedAt: data.archivedAt,
-    });
+    const next: EditorState = {
+      title: data.title, slug: data.slug, excerpt: data.excerpt, content: data.content,
+      categoryId: data.categoryId || "", tagNames: data.tags.map((item) => item.name),
+      featuredMediaId: data.featuredMediaId, coverUrl: data.coverUrl, coverAlt: data.coverAlt,
+      metaTitle: data.metaTitle || "", metaDescription: data.metaDescription || "", focusKeyword: data.focusKeyword || "",
+      publishedAt: data.publishedAt, archivedAt: data.archivedAt,
+    };
+    setPost(next);
+    setStatus(data.status);
+    setSavedAt(new Date(data.updatedAt));
+    snapshot.current = serialize(next, data.status);
   }, [data]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((value) => value + 1), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const words = useMemo(() => post.content.trim().split(/\s+/).filter(Boolean).length, [post.content]);
+  const seoReady = Boolean(post.metaTitle.trim() && post.metaDescription.trim());
+  const selectedCategory = categories.find((item) => item.id === post.categoryId);
+  const tagSuggestions = allTags.filter((item) => item.name.toLowerCase().includes(tag.trim().toLowerCase()) && !post.tagNames.includes(item.name)).slice(0, 6);
+  const filteredCategories = categories.filter((item) => item.name.toLowerCase().includes(categoryQuery.trim().toLowerCase()));
   const update = <K extends keyof EditorState>(key: K, value: EditorState[K]) => setPost((current) => ({ ...current, [key]: value }));
 
-  const addTag = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter" || !tag.trim()) return;
-    event.preventDefault();
-    update("tagNames", [...new Set([...post.tagNames, tag.trim()])]);
+  const toInput = (nextStatus: BlogPostStatus): BlogPostInput => ({
+    title: post.title.trim(), slug: post.slug, excerpt: post.excerpt, content: post.content,
+    featured_media_id: post.featuredMediaId, category_id: post.categoryId || null, status: nextStatus,
+    published_at: nextStatus === "published" ? post.publishedAt || new Date().toISOString() : nextStatus === "draft" ? post.publishedAt : post.publishedAt,
+    archived_at: nextStatus === "archived" ? post.archivedAt || new Date().toISOString() : null,
+    meta_title: post.metaTitle.trim() || null, meta_description: post.metaDescription.trim() || null, focus_keyword: post.focusKeyword.trim() || null,
+  });
+
+  const save = async (nextStatus: BlogPostStatus, silent = false) => {
+    const input = toInput(nextStatus);
+    if (!validPost(input)) {
+      if (!silent) toast({ variant: "destructive", title: "Complete required fields", description: "Add a title, valid slug, and body before saving." });
+      return false;
+    }
+    if (slugAvailable === false) {
+      if (!silent) toast({ variant: "destructive", title: "Slug already exists" });
+      return false;
+    }
+    try {
+      await savePost.mutateAsync({ id: postId, input, authorId: user!.id, tagNames: post.tagNames });
+      setStatus(nextStatus);
+      setPost((current) => ({ ...current, publishedAt: input.published_at, archivedAt: input.archived_at }));
+      setSavedAt(new Date());
+      snapshot.current = serialize({ ...post, publishedAt: input.published_at, archivedAt: input.archived_at }, nextStatus);
+      if (!silent) toast({ title: nextStatus === "published" ? "Post published" : nextStatus === "archived" ? "Post archived" : "Draft saved" });
+      if (!routeId) navigate(`/admin/blogs/edit/${postId}`, { replace: true });
+      return true;
+    } catch (error) {
+      if (!silent) toast({ variant: "destructive", title: "Save failed", description: error instanceof Error ? error.message : "Try again." });
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (!user || serialize(post, status) === snapshot.current) return;
+    const timer = window.setTimeout(() => { void save(status === "published" ? "published" : "draft", true); }, 2000);
+    return () => window.clearTimeout(timer);
+    // Autosave on field changes; save identity is stable enough for this editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post, status, user]);
+
+  const applyFormat = (before: string, after = "") => {
+    const field = editorRef.current;
+    const start = field?.selectionStart ?? post.content.length;
+    const end = field?.selectionEnd ?? post.content.length;
+    const { next, cursor } = insertAtCursor(post.content, start, end, before, after);
+    update("content", next);
+    requestAnimationFrame(() => {
+      field?.focus();
+      field?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const addTagName = (value: string) => {
+    const next = value.trim();
+    if (!next || post.tagNames.some((item) => item.toLowerCase() === next.toLowerCase())) return;
+    update("tagNames", [...post.tagNames, next]);
     setTag("");
   };
 
-  const toInput = (status: BlogPostStatus): BlogPostInput => ({
-    title: post.title.trim(),
-    slug: post.slug,
-    excerpt: post.excerpt,
-    content: post.content,
-    featured_media_id: post.featuredMediaId,
-    category_id: post.categoryId || null,
-    status,
-    published_at: status === "published" ? post.publishedAt || new Date().toISOString() : post.publishedAt,
-    archived_at: status === "archived" ? post.archivedAt || new Date().toISOString() : null,
-    meta_title: post.metaTitle.trim() || null,
-    meta_description: post.metaDescription.trim() || null,
-    focus_keyword: post.focusKeyword.trim() || null,
-  });
-
-  const save = async (status: BlogPostStatus) => {
-    const input = toInput(status);
-    if (!validPost(input, status === "published")) {
-      return toast({ variant: "destructive", title: "Complete required fields", description: status === "published" ? "Add a title, slug, excerpt, and Markdown content before publishing." : "Add a title, valid slug, and Markdown content." });
+  const onTagKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      addTagName(tag);
     }
-    if (slugAvailable === false) return toast({ variant: "destructive", title: "Slug already exists" });
-    try {
-      await savePost.mutateAsync({ id: postId, input, authorId: user!.id, tagNames: post.tagNames });
-      setPost((current) => ({ ...current, publishedAt: input.published_at, archivedAt: input.archived_at }));
-      toast({ title: status === "published" ? "Post published" : status === "archived" ? "Post archived" : "Draft saved" });
-      if (!isExisting) navigate(`/admin/blogs/edit/${postId}`, { replace: true });
-    } catch (error) {
-      toast({ variant: "destructive", title: "Save failed", description: error instanceof Error ? error.message : "Try again." });
-    }
+    if (event.key === "Backspace" && !tag && post.tagNames.length) update("tagNames", post.tagNames.slice(0, -1));
   };
 
   const upload = async (file?: File) => {
@@ -135,107 +210,308 @@ export default function AdminBlogEditor() {
     }
   };
 
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    void upload(event.dataTransfer.files[0]);
+  };
+
   const addCategory = async () => {
     if (!newCategory.trim()) return;
     try {
       const created = await createCategory.mutateAsync(newCategory);
       update("categoryId", created.id);
       setNewCategory("");
+      setCategoryOpen(false);
+      setManageCategories(false);
     } catch (error) {
       toast({ variant: "destructive", title: "Could not create category", description: error instanceof Error ? error.message : "Try again." });
     }
   };
 
-  if (routeId && isLoading) return <div className="surface-card p-8 text-center text-muted-foreground">Loading post…</div>;
-  if (routeId && !isLoading && !data) return <div className="surface-card p-8 text-center text-muted-foreground">This post was not found.</div>;
+  if (routeId && isLoading) return <div className="py-16 text-center text-sm text-muted-foreground">Loading post…</div>;
+  if (routeId && !isLoading && !data) return <div className="py-16 text-center text-sm text-muted-foreground">This post was not found.</div>;
 
   return (
-    <div className="space-y-6 pb-20">
-      <div className="flex items-center justify-between gap-3">
-        <Link to="/admin/blogs" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> All blogs</Link>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="subtle" onClick={() => void save("draft")} disabled={savePost.isPending}><Save className="h-4 w-4" /> Save draft</Button>
-          <Button variant="subtle" onClick={() => void save("review")} disabled={savePost.isPending}>Submit review</Button>
-          <Button variant="hero" onClick={() => void save("published")} disabled={savePost.isPending}><Send className="h-4 w-4" /> Publish</Button>
+    <div className="pb-16">
+      <div className="sticky top-16 z-10 -mx-4 mb-6 flex items-center justify-between gap-3 border-b border-border bg-background/90 px-4 py-3 backdrop-blur md:-mx-6 md:px-6 lg:-mx-8 lg:px-8">
+        <Link to="/admin/blogs" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Posts
+        </Link>
+        <div className="flex items-center gap-3">
+          <span className="hidden text-xs text-muted-foreground sm:inline" key={tick}>{savedCopy(savedAt, status)}</span>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setMode((current) => current === "preview" ? "write" : "preview")}>
+            {mode === "preview" ? "Write" : "Preview"}
+          </Button>
+          <Button variant="hero" size="sm" onClick={() => void save("published")} disabled={savePost.isPending}>Publish</Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="More actions"><MoreHorizontal className="h-4 w-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => void save(status === "published" ? "published" : "draft")}>Save now</DropdownMenuItem>
+              {isExisting && status === "published" && <DropdownMenuItem onClick={() => void save("draft")}>Unpublish</DropdownMenuItem>}
+              {isExisting && status !== "archived" && <DropdownMenuItem onClick={() => void save("archived")}>Archive</DropdownMenuItem>}
+              {isExisting && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={async () => {
+                    await deletePost.mutateAsync(postId);
+                    navigate("/admin/blogs");
+                  }}>Delete</DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        <section className="surface-card space-y-5 p-5 md:p-7">
-          <Input value={post.title} onChange={(e) => { if (!post.slug || post.slug === slugify(post.title)) update("slug", slugify(e.target.value)); update("title", e.target.value); }} placeholder="Untitled post" className="h-auto border-0 bg-transparent px-0 font-display text-3xl focus-visible:ring-0" />
-          <div>
-            <label className="text-xs tracking-caps text-muted-foreground">Slug</label>
-            <Input value={post.slug} onChange={(e) => update("slug", slugify(e.target.value))} className="mt-1" />
-            <p className={`mt-1 text-xs ${slugAvailable === false ? "text-destructive" : "text-muted-foreground"}`}>
-              {slugAvailable === false ? "This slug is already used." : `/blog/${post.slug || "your-post"}`}
-            </p>
+
+      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
+        <section className="mx-auto w-full max-w-[740px]">
+          <input
+            value={post.title}
+            onChange={(event) => {
+              if (!post.slug || post.slug === slugify(post.title)) update("slug", slugify(event.target.value));
+              update("title", event.target.value);
+            }}
+            placeholder="Add a clear, compelling title"
+            className="w-full bg-transparent font-display text-4xl font-medium leading-tight text-foreground outline-none placeholder:text-muted-foreground/50 md:text-5xl"
+          />
+          <div className="mt-3 text-sm text-muted-foreground">
+            {slugAvailable === false ? <span className="text-destructive">This slug is already used.</span> : editingSlug ? (
+              <span className="inline-flex items-center gap-2">
+                adtunedigital.in/blog/
+                <input value={post.slug} onChange={(event) => update("slug", slugify(event.target.value))} className="w-56 border-b border-border bg-transparent outline-none focus:border-primary" />
+                <button type="button" className="text-primary" onClick={() => setEditingSlug(false)}>Done</button>
+              </span>
+            ) : (
+              <span>
+                adtunedigital.in/blog/{post.slug || "your-post"}
+                <button type="button" className="ml-2 text-primary hover:underline" onClick={() => setEditingSlug(true)}>Edit</button>
+              </span>
+            )}
           </div>
-          <div className="flex gap-2">
-            <Button type="button" size="sm" variant={!preview ? "secondary" : "ghost"} onClick={() => setPreview(false)}>Markdown</Button>
-            <Button type="button" size="sm" variant={preview ? "secondary" : "ghost"} onClick={() => setPreview(true)}>Preview</Button>
+
+          <div className="mt-8 flex items-center justify-between gap-3 border-b border-border pb-2">
+            <div className="flex rounded-md bg-muted/40 p-0.5 text-xs">
+              {(["write", "preview"] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setMode(item)}
+                  className={cn("rounded px-2.5 py-1 capitalize", mode === item ? "bg-background text-foreground shadow-sm" : "text-muted-foreground")}
+                >
+                  {item}
+                </button>
+              ))}
+              <button type="button" onClick={() => setMode("split")} className={cn("hidden rounded px-2.5 py-1 xl:inline", mode === "split" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground")}>Split</button>
+            </div>
+            {mode !== "preview" && <FormatBar onFormat={applyFormat} />}
           </div>
-          {preview
-            ? <div className="prose prose-invert min-h-[420px] max-w-none rounded-xl border border-border p-5"><Markdown>{post.content || "*Nothing to preview yet.*"}</Markdown></div>
-            : <Textarea aria-label="Post content" value={post.content} onChange={(e) => update("content", e.target.value)} rows={18} placeholder="Write in Markdown…" className="min-h-[420px] font-mono" />}
-          <div>
-            <label className="text-xs tracking-caps text-muted-foreground">Excerpt</label>
-            <Textarea value={post.excerpt} onChange={(e) => update("excerpt", e.target.value.slice(0, 160))} rows={2} className="mt-1" />
-            <div className="text-right text-xs text-muted-foreground">{post.excerpt.length}/160</div>
-          </div>
-        </section>
-        <aside className="space-y-4">
-          <div className="surface-card space-y-4 p-5">
-            <label className="text-xs tracking-caps text-muted-foreground">Featured image</label>
-            {post.coverUrl && (
-              <div className="relative">
-                <img src={post.coverUrl} alt={post.coverAlt} className="aspect-video w-full rounded-lg object-cover" />
-                <button type="button" onClick={() => setPost((current) => ({ ...current, featuredMediaId: null, coverUrl: null }))} className="absolute right-2 top-2 rounded-full bg-background p-1"><X className="h-4 w-4" /></button>
+
+          <div className={cn("mt-3", mode === "split" && "grid gap-6 xl:grid-cols-2")}>
+            {mode !== "preview" && (
+              <Textarea
+                ref={editorRef}
+                aria-label="Post content"
+                value={post.content}
+                onChange={(event) => update("content", event.target.value)}
+                placeholder="Start writing…"
+                className="min-h-[520px] resize-none border-0 bg-transparent p-0 text-base leading-8 shadow-none focus-visible:ring-0"
+              />
+            )}
+            {mode !== "write" && (
+              <div className="prose prose-invert min-h-[520px] max-w-none">
+                <Markdown>{post.content || "*Nothing to preview yet.*"}</Markdown>
               </div>
             )}
-            <Input value={post.coverAlt} onChange={(e) => update("coverAlt", e.target.value)} placeholder="Alt text" />
-            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-              <Upload className="h-4 w-4" />{uploading ? "Uploading…" : "Choose image"}
-              <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(e) => void upload(e.target.files?.[0])} disabled={uploading} />
-            </label>
           </div>
-          <div className="surface-card space-y-4 p-5">
-            <label className="text-xs tracking-caps text-muted-foreground">Category</label>
-            <Select value={post.categoryId || undefined} onValueChange={(value) => update("categoryId", value)}>
-              <SelectTrigger><SelectValue placeholder="Select a category" /></SelectTrigger>
-              <SelectContent>
-                {categories.map((category) => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <div className="flex gap-2">
-              <Input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category" />
-              <Button type="button" variant="subtle" onClick={() => void addCategory()} disabled={createCategory.isPending}>Add</Button>
-            </div>
-            <label className="text-xs tracking-caps text-muted-foreground">Tags</label>
-            <div className="flex flex-wrap gap-2">
-              {post.tagNames.map((item) => (
-                <span key={item} className="rounded-full bg-accent px-2 py-1 text-xs">
-                  {item} <button type="button" onClick={() => update("tagNames", post.tagNames.filter((value) => value !== item))}>×</button>
-                </span>
-              ))}
-            </div>
-            <Input list="existing-tags" value={tag} onChange={(e) => setTag(e.target.value)} onKeyDown={addTag} placeholder="Type tag, press Enter" />
-            <datalist id="existing-tags">
-              {allTags.map((item) => <option key={item.id} value={item.name} />)}
-            </datalist>
-          </div>
-          <div className="surface-card space-y-3 p-5">
-            <div className="text-xs tracking-caps text-muted-foreground">SEO</div>
-            <Input value={post.metaTitle} onChange={(e) => update("metaTitle", e.target.value.slice(0, 70))} placeholder="Meta title" />
-            <Textarea value={post.metaDescription} onChange={(e) => update("metaDescription", e.target.value.slice(0, 160))} placeholder="Meta description" />
-            <Input value={post.focusKeyword} onChange={(e) => update("focusKeyword", e.target.value)} placeholder="Focus keyword" />
-          </div>
-          <div className="surface-card space-y-3 p-5">
-            <div className="text-sm text-muted-foreground">{words} words · {readTime(post.content)} min read</div>
-            <Button variant="subtle" className="w-full" onClick={() => void save("archived")} disabled={savePost.isPending}>
-              <Archive className="h-4 w-4" /> Archive
-            </Button>
+
+          <div className="mt-3 text-xs text-muted-foreground">{words} words · {readTime(post.content)} min read</div>
+
+          <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen} className="mt-8 border-t border-border pt-4">
+            <CollapsibleTrigger className="flex w-full items-center justify-between text-sm text-muted-foreground hover:text-foreground">
+              Post details
+              <ChevronDown className={cn("h-4 w-4 transition-transform", detailsOpen && "rotate-180")} />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-4">
+              <label className="text-xs text-muted-foreground">Excerpt <span className="text-muted-foreground/70">(optional)</span></label>
+              <Textarea value={post.excerpt} onChange={(event) => update("excerpt", event.target.value.slice(0, 160))} rows={3} className="mt-2" placeholder="A short summary for listings and search." />
+              <div className="mt-1 text-right text-xs text-muted-foreground">{post.excerpt.length}/160</div>
+            </CollapsibleContent>
+          </Collapsible>
+        </section>
+
+        <aside className="xl:sticky xl:top-28 xl:self-start">
+          <div className="rounded-xl border border-border/70 bg-background/40 px-4 xl:w-[300px]">
+            <RailSection title="Featured image" defaultOpen>
+              {post.coverUrl ? (
+                <div className="space-y-3">
+                  <div className="relative overflow-hidden rounded-lg">
+                    <img src={post.coverUrl} alt={post.coverAlt} className="aspect-video w-full object-cover" />
+                  </div>
+                  <div className="flex gap-2">
+                    <label className="cursor-pointer text-xs text-primary hover:underline">
+                      Replace
+                      <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => void upload(event.target.files?.[0])} />
+                    </label>
+                    <button type="button" className="text-xs text-muted-foreground hover:text-destructive" onClick={() => setPost((current) => ({ ...current, featuredMediaId: null, coverUrl: null, coverAlt: "" }))}>Remove</button>
+                  </div>
+                  <Input value={post.coverAlt} onChange={(event) => update("coverAlt", event.target.value)} placeholder="Alt text" />
+                </div>
+              ) : (
+                <div
+                  onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={onDrop}
+                  className={cn("rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground", dragging && "border-primary bg-accent/30")}
+                >
+                  <Upload className="mx-auto mb-2 h-4 w-4" />
+                  <p>{uploading ? "Uploading…" : "Drag an image here"}</p>
+                  <p className="mt-1 text-xs">1600 × 900 recommended · JPEG, PNG, WebP · 4 MB</p>
+                  <div className="mt-3 flex justify-center gap-3 text-xs">
+                    <label className="cursor-pointer text-primary hover:underline">
+                      Upload
+                      <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => void upload(event.target.files?.[0])} disabled={uploading} />
+                    </label>
+                    <button type="button" className="text-primary hover:underline" onClick={() => setLibraryOpen(true)}>Media library</button>
+                  </div>
+                </div>
+              )}
+            </RailSection>
+
+            <RailSection title="Organization" defaultOpen>
+              <label className="text-xs text-muted-foreground">Category</label>
+              <Popover open={categoryOpen} onOpenChange={setCategoryOpen}>
+                <PopoverTrigger asChild>
+                  <Button type="button" variant="outline" className="mt-1 h-10 w-full justify-between font-normal">
+                    {selectedCategory?.name || "Select a category"}
+                    <ChevronDown className="h-4 w-4 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-[268px] p-2">
+                  <Input value={categoryQuery} onChange={(event) => setCategoryQuery(event.target.value)} placeholder="Search categories" className="h-9" />
+                  <div className="mt-2 max-h-48 overflow-auto">
+                    {filteredCategories.map((item) => (
+                      <button key={item.id} type="button" className="block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent" onClick={() => { update("categoryId", item.id); setCategoryOpen(false); setCategoryQuery(""); }}>
+                        {item.name}
+                      </button>
+                    ))}
+                    {filteredCategories.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">No matches</p>}
+                  </div>
+                  <button type="button" className="mt-2 text-xs text-primary hover:underline" onClick={() => { setCategoryOpen(false); setManageCategories(true); }}>Manage categories</button>
+                </PopoverContent>
+              </Popover>
+
+              <label className="mt-4 block text-xs text-muted-foreground">Tags</label>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {post.tagNames.map((item) => (
+                  <span key={item} className="rounded-full bg-accent px-2 py-0.5 text-xs">
+                    {item}
+                    <button type="button" className="ml-1 text-muted-foreground hover:text-foreground" onClick={() => update("tagNames", post.tagNames.filter((value) => value !== item))} aria-label={`Remove ${item}`}>×</button>
+                  </span>
+                ))}
+              </div>
+              <Input value={tag} onChange={(event) => setTag(event.target.value)} onKeyDown={onTagKey} placeholder="Add a tag" className="mt-2 h-9" />
+              {tag && tagSuggestions.length > 0 && (
+                <div className="mt-1 rounded-md border border-border bg-background p-1">
+                  {tagSuggestions.map((item) => (
+                    <button key={item.id} type="button" className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent" onClick={() => addTagName(item.name)}>{item.name}</button>
+                  ))}
+                </div>
+              )}
+            </RailSection>
+
+            <RailSection title="SEO" hint={seoReady ? "Configured" : "Not configured"}>
+              <Input value={post.metaTitle} onChange={(event) => update("metaTitle", event.target.value.slice(0, 70))} placeholder="Meta title" />
+              <Textarea value={post.metaDescription} onChange={(event) => update("metaDescription", event.target.value.slice(0, 160))} placeholder="Meta description" className="mt-2" rows={3} />
+              <Input value={post.focusKeyword} onChange={(event) => update("focusKeyword", event.target.value)} placeholder="Focus keyword" className="mt-2" />
+            </RailSection>
           </div>
         </aside>
       </div>
+
+      <Dialog open={manageCategories} onOpenChange={setManageCategories}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manage categories</DialogTitle>
+            <DialogDescription>Create a category without leaving the editor.</DialogDescription>
+          </DialogHeader>
+          <ul className="max-h-48 space-y-1 overflow-auto text-sm">
+            {categories.map((item) => <li key={item.id} className="rounded-md px-2 py-1.5 hover:bg-accent/40">{item.name}</li>)}
+            {categories.length === 0 && <li className="px-2 py-3 text-muted-foreground">No categories yet.</li>}
+          </ul>
+          <div className="flex gap-2">
+            <Input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="New category name" />
+            <Button type="button" onClick={() => void addCategory()} disabled={createCategory.isPending}>Add</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Media library</DialogTitle>
+            <DialogDescription>Select an existing image for this post.</DialogDescription>
+          </DialogHeader>
+          {library.length === 0 ? <p className="text-sm text-muted-foreground">No images uploaded yet.</p> : (
+            <div className="grid max-h-80 grid-cols-3 gap-3 overflow-auto">
+              {library.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="overflow-hidden rounded-lg border border-border hover:border-primary"
+                  onClick={() => {
+                    setPost((current) => ({ ...current, featuredMediaId: item.id, coverUrl: item.url, coverAlt: item.alt_text || current.coverAlt }));
+                    setLibraryOpen(false);
+                  }}
+                >
+                  <img src={item.url || ""} alt={item.alt_text || item.file_name} className="aspect-video w-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RailSection({ title, hint, defaultOpen = false, children }: { title: string; hint?: string; defaultOpen?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-b border-border py-3 last:border-b-0">
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium">
+        <span>{title}</span>
+        <span className="flex items-center gap-2">
+          {hint && <span className="text-xs font-normal text-muted-foreground">{hint}</span>}
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")} />
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-3">{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function FormatBar({ onFormat }: { onFormat: (before: string, after?: string) => void }) {
+  const tools = [
+    { icon: Heading2, label: "Heading", before: "## ", after: "" },
+    { icon: Bold, label: "Bold", before: "**", after: "**" },
+    { icon: Italic, label: "Italic", before: "_", after: "_" },
+    { icon: Link2, label: "Link", before: "[", after: "](url)" },
+    { icon: ImagePlus, label: "Image", before: "![", after: "](url)" },
+    { icon: List, label: "List", before: "- ", after: "" },
+    { icon: ListOrdered, label: "Numbered list", before: "1. ", after: "" },
+    { icon: Quote, label: "Quote", before: "> ", after: "" },
+    { icon: Code, label: "Code", before: "`", after: "`" },
+  ] as const;
+  return (
+    <div className="hidden gap-0.5 sm:flex">
+      {tools.map((tool) => (
+        <Button key={tool.label} type="button" size="icon" variant="ghost" className="h-8 w-8" aria-label={tool.label} onClick={() => onFormat(tool.before, tool.after)}>
+          <tool.icon className="h-3.5 w-3.5" />
+        </Button>
+      ))}
     </div>
   );
 }

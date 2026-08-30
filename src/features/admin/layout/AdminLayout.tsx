@@ -103,7 +103,7 @@ export function AdminLayout() {
           </div>
         </header>
 
-        <main className="p-4 md:p-8">
+        <main className={pathname.startsWith("/admin/blogs/new") || pathname.startsWith("/admin/blogs/edit") ? "px-4 py-4 md:px-6 lg:px-8" : "p-4 md:p-8"}>
           <Outlet />
         </main>
       </div>
