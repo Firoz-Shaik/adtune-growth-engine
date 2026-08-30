@@ -158,6 +158,26 @@ export function useCategories() {
   });
 }
 
+export function useMediaLibrary() {
+  return useQuery({
+    queryKey: ["blog-media"],
+    enabled: isSupabaseConfigured,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("media")
+        .select("id, storage_path, file_name, alt_text, bucket_name")
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .limit(48);
+      if (error) throw error;
+      return (data || []).map((item) => ({
+        ...item,
+        url: publicMediaUrl(item.storage_path, item.bucket_name),
+      }));
+    },
+  });
+}
+
 export function useTags() {
   return useQuery({
     queryKey: blogKeys.tags,
